@@ -4,5 +4,5 @@ pymysql==1.0.2
 slowapi==0.1.9
 python-dotenv==0.21.0
 pydantic==1.10.19
-jwt==2.7.0
+pyjwt==2.7.0
 cachetools==5.3.0
