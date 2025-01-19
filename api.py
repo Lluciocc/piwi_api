@@ -2,7 +2,6 @@ import pymysql
 from fastapi import FastAPI, HTTPException, Request, Query, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, validator
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.middleware import SlowAPIMiddleware
@@ -51,60 +50,53 @@ def get_db_connection():
     finally:
         connection.close()
 
-class AccountCreateRequest(BaseModel):
-    pseudo: str
-
-    @validator("pseudo")
-    def psd_length(cls, v):
-        if len(v) < 3:
-            raise ValueError('Le pseudo doit être plus long que 3 caractères !')
-        return v
-
-class AccountResponse(BaseModel):
-    id: str
-    pseudo: str
-    created_at: str
-    isPremium: bool
-
-class LoginRequest(BaseModel):
-    id: str
+def validate_pseudo_length(pseudo: str):
+    if len(pseudo) < 3:
+        raise ValueError("Le pseudo doit être plus long que 3 caractères !")
+    return pseudo
 
 def generate_account_id(pseudo: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_DNS, pseudo))
 
-@app.post("/create-account", response_model=AccountResponse)
-async def create_account(account: AccountCreateRequest):
+@app.post("/create-account")
+async def create_account(pseudo: str):
     try:
+        validate_pseudo_length(pseudo)
+
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT COUNT(*) AS count FROM accounts WHERE pseudo = %s", (account.pseudo,))
+                cursor.execute("SELECT COUNT(*) AS count FROM accounts WHERE pseudo = %s", (pseudo,))
                 if cursor.fetchone()["count"] > 0:
                     raise HTTPException(status_code=400, detail="Le pseudo est déjà pris")
 
-                user_id = generate_account_id(account.pseudo)
+                user_id = generate_account_id(pseudo)
                 created_at = datetime.now().isoformat()
 
                 cursor.execute(
                     "INSERT INTO accounts (id, pseudo, created_at, isPremium, premium_claimed_at) VALUES (%s, %s, %s, %s, %s)",
-                    (user_id, account.pseudo, created_at, False, None)
+                    (user_id, pseudo, created_at, False, None)
                 )
                 conn.commit()
 
-        return AccountResponse(
-            id=user_id,
-            pseudo=account.pseudo,
-            created_at=created_at,
-            isPremium=False
-        )
+        return {
+            "id": user_id,
+            "pseudo": pseudo,
+            "created_at": created_at,
+            "isPremium": False
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de la création du compte : {str(e)}")
 
 @app.post("/login")
-async def login(credentials: LoginRequest):
+async def login(credentials: dict):
+    user_id = credentials.get("id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="ID non fourni")
+
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT * FROM accounts WHERE id = %s", (credentials.id,))
+                cursor.execute("SELECT * FROM accounts WHERE id = %s", (user_id,))
                 user = cursor.fetchone()
                 if user:
                     return {"success": True}
@@ -265,4 +257,3 @@ async def claim_premium(token: str, request: Request):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
