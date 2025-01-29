@@ -51,11 +51,13 @@ def get_db_connection():
         connection.close()
 
 def validate_pseudo_length(pseudo: str):
+    print(f"Validation du pseudo : {pseudo}")
     if len(pseudo) < 3:
         raise ValueError("Le pseudo doit être plus long que 3 caractères !")
     return pseudo
 
 def generate_account_id(pseudo: str) -> str:
+    print(f"Génération de l'ID pour le pseudo : {pseudo}")
     return str(uuid.uuid5(uuid.NAMESPACE_DNS, pseudo))
 
 @app.post("/create-account")
@@ -66,7 +68,8 @@ async def create_account(pseudo: str):
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("SELECT COUNT(*) AS count FROM accounts WHERE pseudo = %s", (pseudo,))
-                if cursor.fetchone()["count"] > 0:
+                result = cursor.fetchone()
+                if result and result["count"] > 0:
                     raise HTTPException(status_code=400, detail="Le pseudo est déjà pris")
 
                 user_id = generate_account_id(pseudo)
@@ -77,6 +80,7 @@ async def create_account(pseudo: str):
                     (user_id, pseudo, created_at, False, None)
                 )
                 conn.commit()
+                print("Compte créé avec succès.")
 
         return {
             "id": user_id,
@@ -84,8 +88,14 @@ async def create_account(pseudo: str):
             "created_at": created_at,
             "isPremium": False
         }
+
+    except HTTPException as http_ex:
+        print(f"Erreur HTTP : {http_ex.detail}")
+        raise http_ex
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la création du compte : {str(e)}")
+            print(f"Erreur interne : {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Erreur lors de la création du compte : {str(e)}")
+
 
 @app.post("/login")
 async def login(credentials: dict):
@@ -103,6 +113,20 @@ async def login(credentials: dict):
                 return {"success": False, "message": "Utilisateur non trouvé"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de la connexion : {str(e)}")
+    
+@app.delete("/delete-account")
+async def delete_account(id: str):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT * FROM accounts WHERE id = %s", (id))
+                if not cursor.fetchone():
+                    raise HTTPException(status_code=404, details=f"Pas de compte pour user id :{id}")
+                cursor.execute("DELETE FROM accounts WHERE id = %s", (id,))
+                conn.commit()
+                return {"message" : "Compte supprimé avec succès"}
+    except Exception as e:
+        raise HTTPException(status_code=500, details=f"Erreur lors de la suppression du compte pour l'id {id}: {str(e)} ")
 
 @app.get("/user/{user_id}")
 async def get_user_info(user_id: str):
@@ -136,18 +160,6 @@ async def get_movies(page: int = Query(1, ge=1), per_page: int = Query(15, ge=1,
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de la récupération des films : {str(e)}")
 
-@app.get("/movies/total_pages")
-async def get_movies_total_pages(per_page: int = Query(15, ge=1, le=50)):
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT COUNT(*) as total FROM movies")
-                total = cursor.fetchone()["total"]
-        
-        total_pages = (total + per_page - 1) // per_page
-        return {"total_pages": total_pages}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors du calcul du nombre total de pages : {str(e)}")
 
 @app.get("/movies/{movie_id}")
 async def get_movie(movie_id: int):
@@ -181,19 +193,6 @@ async def get_series(page: int = Query(1, ge=1), per_page: int = Query(15, ge=1,
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de la récupération des séries : {str(e)}")
 
-@app.get("/series/total_pages")
-async def get_series_total_pages(per_page: int = Query(15, ge=1, le=50)):
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT COUNT(*) as total FROM series")
-                total = cursor.fetchone()["total"]
-        
-        total_pages = (total + per_page - 1) // per_page
-        return {"total_pages": total_pages}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors du calcul du nombre total de pages : {str(e)}")
-
 @app.get("/series/{series_id}")
 async def get_series_by_id(series_id: int):
     try:
@@ -206,6 +205,70 @@ async def get_series_by_id(series_id: int):
         return series
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur lors de la récupération de la série : {str(e)}")
+
+
+@app.get("/search")
+async def search(query: str = Query(..., description="Mot-clé ou titre à rechercher")):
+    try:
+        # Initialisation des résultats
+        results = {"movies": [], "series": []}
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # Rechercher dans les films
+                cursor.execute(
+                    """
+                    SELECT * FROM movies
+                    WHERE title LIKE %s
+                    """,
+                    (f"%{query}%",),
+                )
+                results["movies"] = cursor.fetchall()
+
+                # Rechercher dans les séries
+                cursor.execute(
+                    """
+                    SELECT * FROM series
+                    WHERE title LIKE %s
+                    """,
+                    (f"%{query}%",),
+                )
+                results["series"] = cursor.fetchall()
+
+        return {
+            "query": query,
+            "movies": results["movies"],
+            "series": results["series"],
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Erreur lors de la recherche : {str(e)}"
+        )
+
+
+@app.get("/total-pages")
+async def get_total_pages(per_page: int = Query(15, ge=1, le=50)):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT COUNT(*) as total FROM movies")
+                movies_total = cursor.fetchone()["total"]
+                movies_pages = (movies_total + per_page - 1) // per_page  
+
+                cursor.execute("SELECT COUNT(*) as total FROM series")
+                series_total = cursor.fetchone()["total"]
+                series_pages = (series_total + per_page - 1) // per_page  
+
+        total_pages = movies_pages + series_pages
+
+        return {
+            "movies": movies_pages,
+            "series": series_pages,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors du calcul du nombre total de pages : {str(e)}")
+
 
 @app.get("/generate_claim-link")
 async def generate_claim_link(pseudo: str):
