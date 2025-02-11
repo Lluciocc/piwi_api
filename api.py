@@ -45,17 +45,18 @@ series_cache = TTLCache(maxsize=100, ttl=300)  # Cache for 5 minutes
 
 @contextmanager
 def get_db_connection():
+    connection = None 
     try:
         connection = pymysql.connect(**DB_CONFIG, cursorclass=DictCursor)
         yield connection
-
     except OperationalError as e:
         if "too many connections" in str(e).lower():
             raise HTTPException(status_code=503, detail="Quota de requêtes SQL dépassé, réessayez plus tard.")
         else:
             raise HTTPException(status_code=500, detail=f"Erreur de connexion à la base de données : {str(e)}")
     finally:
-        connection.close()
+        if connection:
+            connection.close()
 
 def validate_pseudo_length(pseudo: str):
     print(f"Validation du pseudo : {pseudo}")
