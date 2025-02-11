@@ -1,4 +1,5 @@
 import pymysql
+from pymysql.err import OperationalError
 from fastapi import FastAPI, HTTPException, Request, Query, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,9 +45,15 @@ series_cache = TTLCache(maxsize=100, ttl=300)  # Cache for 5 minutes
 
 @contextmanager
 def get_db_connection():
-    connection = pymysql.connect(**DB_CONFIG, cursorclass=DictCursor)
     try:
+        connection = pymysql.connect(**DB_CONFIG, cursorclass=DictCursor)
         yield connection
+
+    except OperationalError as e:
+        if "too many connections" in str(e).lower():
+            raise HTTPException(status_code=503, detail="Quota de requêtes SQL dépassé, réessayez plus tard.")
+        else:
+            raise HTTPException(status_code=500, detail=f"Erreur de connexion à la base de données : {str(e)}")
     finally:
         connection.close()
 
@@ -208,35 +215,20 @@ async def get_series_by_id(series_id: int):
 
 
 @app.get("/search")
-async def search(query: str = Query(..., description="Mot-clé ou titre à rechercher")):
+async def search(q: str = Query(..., description="Mot-clé ou titre à rechercher")):
     try:
-        # Initialisation des résultats
         results = {"movies": [], "series": []}
 
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # Rechercher dans les films
-                cursor.execute(
-                    """
-                    SELECT * FROM movies
-                    WHERE title LIKE %s
-                    """,
-                    (f"%{query}%",),
-                )
+                cursor.execute("""SELECT * FROM movies WHERE title LIKE %s""",(f"%{q}%",),)
                 results["movies"] = cursor.fetchall()
 
-                # Rechercher dans les séries
-                cursor.execute(
-                    """
-                    SELECT * FROM series
-                    WHERE title LIKE %s
-                    """,
-                    (f"%{query}%",),
-                )
+                cursor.execute("""SELECT * FROM series WHERE title LIKE %s""",(f"%{q}%",),)
                 results["series"] = cursor.fetchall()
 
         return {
-            "query": query,
+            "query": q,
             "movies": results["movies"],
             "series": results["series"],
         }
